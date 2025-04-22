@@ -4,6 +4,11 @@ import time
 import copy
 import math
 import random
+import pytesseract
+from PIL import Image, ImageDraw, ImageFont
+import io
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.preprocessing import StandardScaler
 
 # Initialize pygame
 pygame.init()
@@ -30,6 +35,8 @@ LIGHT_NOTE_COLOR = (150, 150, 150)
 LIGHT_BACKGROUND_COLOR = (245, 245, 245)
 LIGHT_TEXT_COLOR = (0, 0, 0)  # Black text for light mode
 LIGHT_ORIGINAL_NUMBER_COLOR = (0, 0, 0)  # Black for original numbers in light mode
+LIGHT_GENERATED_COLOR = (0, 0, 0)  # Black for generated numbers in light mode
+LIGHT_HANDWRITTEN_COLOR = (0, 120, 215)  # Blue for handwritten numbers in light mode
 
 # Dark mode colors
 DARK_WHITE = (240, 240, 240)
@@ -53,6 +60,8 @@ DARK_NOTE_COLOR = (180, 180, 180)  # Brighter notes for better visibility
 DARK_BACKGROUND_COLOR = (20, 20, 20)
 DARK_TEXT_COLOR = (240, 240, 240)  # White text for dark mode
 DARK_ORIGINAL_NUMBER_COLOR = (240, 240, 240)  # White for original numbers in dark mode
+DARK_GENERATED_COLOR = (255, 255, 255)  # White for generated numbers in dark mode
+DARK_HANDWRITTEN_COLOR = (255, 255, 255)  # White for handwritten numbers in dark mode
 
 # Default to dark mode
 WHITE = DARK_WHITE
@@ -416,6 +425,64 @@ class StartScreen:
         set_theme(dark_mode)
         self.theme_button.text = f"Theme: {'Dark' if dark_mode else 'Light'}"
 
+class Stroke:
+    def __init__(self):
+        self.points = []
+        self.start_time = time.time()
+        self.directions = []
+        self.cell = None  # Store which cell this stroke belongs to
+    
+    def add_point(self, pos):
+        self.points.append(pos)
+        if len(self.points) >= 2:
+            dx = self.points[-1][0] - self.points[-2][0]
+            dy = self.points[-1][1] - self.points[-2][1]
+            self.directions.append((dx, dy))
+    
+    def get_direction(self):
+        if len(self.points) < 2:
+            return None
+        dx = self.points[-1][0] - self.points[0][0]
+        dy = self.points[-1][1] - self.points[0][1]
+        return (dx, dy)
+    
+    def get_bounds(self):
+        if not self.points:
+            return None
+        min_x = min(p[0] for p in self.points)
+        max_x = max(p[0] for p in self.points)
+        min_y = min(p[1] for p in self.points)
+        max_y = max(p[1] for p in self.points)
+        return (min_x, min_y, max_x, max_y)
+    
+    def get_curvature(self):
+        if len(self.points) < 3:
+            return 0
+        
+        total_angle = 0
+        for i in range(1, len(self.points)-1):
+            v1 = (self.points[i][0] - self.points[i-1][0],
+                  self.points[i][1] - self.points[i-1][1])
+            v2 = (self.points[i+1][0] - self.points[i][0],
+                  self.points[i+1][1] - self.points[i][1])
+            dot = v1[0] * v2[0] + v1[1] * v2[1]
+            mag1 = math.sqrt(v1[0]**2 + v1[1]**2)
+            mag2 = math.sqrt(v2[0]**2 + v2[1]**2)
+            if mag1 > 0 and mag2 > 0:
+                angle = math.acos(max(-1, min(1, dot / (mag1 * mag2))))
+                total_angle += angle
+        
+        return total_angle
+    
+    def has_loop(self):
+        bounds = self.get_bounds()
+        if not bounds:
+            return False
+        min_x, min_y, max_x, max_y = bounds
+        width = max_x - min_x
+        height = max_y - min_y
+        return width > height * 0.7 and height > width * 0.7
+
 class SudokuGame:
     def __init__(self):
         self.board = np.zeros((GRID_SIZE, GRID_SIZE), dtype=int)
@@ -446,6 +513,32 @@ class SudokuGame:
         self.redo_button = Button(3*button_width + 4*button_margin, button_y, button_width, button_height, "Redo", LIGHT_GREEN, GREEN, "Y", "Redo last move (Ctrl+Y)")
         self.new_game_button = Button(4*button_width + 5*button_margin, button_y, button_width, button_height, "New", LIGHT_GOLD, GOLD, "R", "Start new game (R)")
         self.theme_button = Button(5*button_width + 6*button_margin, button_y, button_width, button_height, "Theme", LIGHT_PURPLE, PURPLE, "T", "Toggle between light and dark mode (T)")
+        
+        # Add clear button for handwriting
+        self.clear_button = Button(
+            button_margin, button_y - 100, 
+            button_width, button_height,
+            "Clear", LIGHT_RED, RED, "C", "Clear handwriting in current cell (C)"
+        )
+        
+        # Handwriting recognition
+        self.current_stroke = None
+        self.strokes = {}  # Dictionary to store strokes per cell
+        self.recognition_mode = False
+        self.recognition_button = Button(
+            button_margin, button_y - 50, 
+            button_width, button_height,
+            "Handwrite", LIGHT_PURPLE, PURPLE, "H", "Toggle handwriting mode (H)"
+        )
+        self.last_written_cell = None
+        self.stroke_start_time = None
+        self.stroke_colors = {
+            'dark': (255, 255, 255),  # White
+            'light': (0, 120, 215)    # Bright blue
+        }
+        
+        # Initialize Tesseract
+        pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'  # Update this path
         
         self.generate_puzzle()
         self.save_state()
@@ -562,7 +655,13 @@ class SudokuGame:
             for j in range(GRID_SIZE):
                 # Draw main numbers
                 if self.board[i, j] != 0:
-                    color = ORIGINAL_NUMBER_COLOR if self.original_board[i, j] != 0 else BLUE
+                    # Use different colors for generated vs handwritten numbers
+                    if self.original_board[i, j] != 0:
+                        # Generated number
+                        color = DARK_GENERATED_COLOR if dark_mode else LIGHT_GENERATED_COLOR
+                    else:
+                        # Handwritten number
+                        color = DARK_HANDWRITTEN_COLOR if dark_mode else LIGHT_HANDWRITTEN_COLOR
                     
                     # Handle animation for initial numbers
                     if (i, j) in self.cell_animations and self.cell_animations[(i, j)].active:
@@ -601,6 +700,8 @@ class SudokuGame:
         self.undo_button.draw(screen)
         self.redo_button.draw(screen)
         self.theme_button.draw(screen)
+        self.recognition_button.draw(screen)
+        self.clear_button.draw(screen)
         
         # Draw notes mode status
         notes_status = "Notes: ON" if self.notes_mode else "Notes: OFF"
@@ -614,12 +715,27 @@ class SudokuGame:
         self.undo_button.current_color = LIGHT_RED if len(self.history) > 0 else GRAY
         self.redo_button.current_color = LIGHT_GREEN if len(self.future) > 0 else GRAY
         
+        # Draw recognition mode status
+        self.recognition_button.text = "Handwrite: ON" if self.recognition_mode else "Handwrite: OFF"
+        
         # Draw win animation if active
         if self.win_animation:
             if not self.win_animation.update():
                 self.win_animation = None
             else:
                 self.win_animation.draw(screen)
+        
+        # Draw all strokes for the current cell
+        if self.selected in self.strokes:
+            stroke_color = self.stroke_colors['dark' if dark_mode else 'light']
+            for stroke in self.strokes[self.selected]:
+                if len(stroke.points) > 1:
+                    pygame.draw.lines(screen, stroke_color, False, stroke.points, 3)
+        
+        # Draw current stroke
+        if self.current_stroke and len(self.current_stroke.points) > 1:
+            stroke_color = self.stroke_colors['dark' if dark_mode else 'light']
+            pygame.draw.lines(screen, stroke_color, False, self.current_stroke.points, 3)
     
     def select(self, row, col):
         self.selected = (row, col)
@@ -753,10 +869,153 @@ class SudokuGame:
         return True
     
     def toggle_theme(self):
-        global dark_mode
+        global dark_mode, WHITE, BLACK, GRAY, BLUE, RED, GREEN, DARK_GRAY, LIGHT_RED, LIGHT_GREEN, DARK_BLUE, PURPLE, LIGHT_PURPLE, GOLD, LIGHT_GOLD, GRID_COLOR, SELECTION_COLOR, NOTE_COLOR, BACKGROUND_COLOR, TEXT_COLOR, ORIGINAL_NUMBER_COLOR, GENERATED_COLOR, HANDWRITTEN_COLOR
+        
         dark_mode = not dark_mode
-        set_theme(dark_mode)
-        self.theme_button.text = f"Theme: {'Dark' if dark_mode else 'Light'}"
+        
+        if dark_mode:
+            WHITE = DARK_WHITE
+            BLACK = DARK_BLACK
+            GRAY = DARK_GRAY
+            BLUE = DARK_BLUE
+            RED = DARK_RED
+            GREEN = DARK_GREEN
+            DARK_GRAY = DARK_DARK_GRAY
+            LIGHT_RED = DARK_LIGHT_RED
+            LIGHT_GREEN = DARK_LIGHT_GREEN
+            DARK_BLUE = DARK_DARK_BLUE
+            PURPLE = DARK_PURPLE
+            LIGHT_PURPLE = DARK_LIGHT_PURPLE
+            GOLD = DARK_GOLD
+            LIGHT_GOLD = DARK_LIGHT_GOLD
+            GRID_COLOR = DARK_GRID_COLOR
+            SELECTION_COLOR = DARK_SELECTION_COLOR
+            NOTE_COLOR = DARK_NOTE_COLOR
+            BACKGROUND_COLOR = DARK_BACKGROUND_COLOR
+            TEXT_COLOR = DARK_TEXT_COLOR
+            ORIGINAL_NUMBER_COLOR = DARK_ORIGINAL_NUMBER_COLOR
+            GENERATED_COLOR = DARK_GENERATED_COLOR
+            HANDWRITTEN_COLOR = DARK_HANDWRITTEN_COLOR
+        else:
+            WHITE = LIGHT_WHITE
+            BLACK = LIGHT_BLACK
+            GRAY = LIGHT_GRAY
+            BLUE = LIGHT_BLUE
+            RED = LIGHT_RED
+            GREEN = LIGHT_GREEN
+            DARK_GRAY = LIGHT_DARK_GRAY
+            LIGHT_RED = LIGHT_LIGHT_RED
+            LIGHT_GREEN = LIGHT_LIGHT_GREEN
+            DARK_BLUE = LIGHT_DARK_BLUE
+            PURPLE = LIGHT_PURPLE
+            LIGHT_PURPLE = LIGHT_LIGHT_PURPLE
+            GOLD = LIGHT_GOLD
+            LIGHT_GOLD = LIGHT_LIGHT_GOLD
+            GRID_COLOR = LIGHT_GRID_COLOR
+            SELECTION_COLOR = LIGHT_SELECTION_COLOR
+            NOTE_COLOR = LIGHT_NOTE_COLOR
+            BACKGROUND_COLOR = LIGHT_BACKGROUND_COLOR
+            TEXT_COLOR = LIGHT_TEXT_COLOR
+            ORIGINAL_NUMBER_COLOR = LIGHT_ORIGINAL_NUMBER_COLOR
+            GENERATED_COLOR = LIGHT_GENERATED_COLOR
+            HANDWRITTEN_COLOR = LIGHT_HANDWRITTEN_COLOR
+    
+    def start_stroke(self, pos):
+        if pos[0] < WIDTH and pos[1] < WIDTH:
+            col = pos[0] // CELL_SIZE
+            row = pos[1] // CELL_SIZE
+            if self.original_board[row, col] == 0:
+                self.select(row, col)
+                self.current_stroke = Stroke()
+                self.current_stroke.cell = (row, col)
+                self.current_stroke.add_point(pos)
+                self.last_written_cell = (row, col)
+                
+                # Initialize strokes for this cell if needed
+                if (row, col) not in self.strokes:
+                    self.strokes[(row, col)] = []
+    
+    def add_stroke_point(self, pos):
+        if self.current_stroke:
+            self.current_stroke.add_point(pos)
+    
+    def end_stroke(self):
+        if self.current_stroke and len(self.current_stroke.points) > 5:
+            # Add stroke to the current cell's strokes
+            if self.current_stroke.cell in self.strokes:
+                self.strokes[self.current_stroke.cell].append(self.current_stroke)
+            
+            # Try to recognize the number
+            self.recognize_number()
+            
+        self.current_stroke = None
+    
+    def recognize_number(self):
+        if not self.selected or self.selected not in self.strokes:
+            return
+        
+        cell_strokes = self.strokes[self.selected]
+        if not cell_strokes:
+            return
+        
+        # Create a PIL image for OCR with larger size for better recognition
+        cell_size = CELL_SIZE * 2  # Double the size for better recognition
+        img = Image.new('RGB', (cell_size, cell_size), color='black')
+        draw = ImageDraw.Draw(img)
+        
+        # Draw all strokes with thicker lines
+        for stroke in cell_strokes:
+            if len(stroke.points) > 1:
+                # Scale points to the larger image size
+                points = [(p[0] * 2 % cell_size, p[1] * 2 % cell_size) for p in stroke.points]
+                draw.line(points, fill='white', width=6)  # Thicker lines
+        
+        try:
+            # Convert to grayscale
+            img = img.convert('L')
+            
+            # Apply threshold to make the image binary
+            threshold = 128
+            img = img.point(lambda x: 255 if x > threshold else 0, '1')
+            
+            # Add padding to the image
+            padding = 10
+            padded_img = Image.new('L', (cell_size + 2*padding, cell_size + 2*padding), 0)
+            padded_img.paste(img, (padding, padding))
+            
+            # Perform OCR with improved configuration
+            config = '--psm 10 --oem 3 -c tessedit_char_whitelist=0123456789 --dpi 300'
+            result = pytesseract.image_to_data(padded_img, config=config, output_type=pytesseract.Output.DICT)
+            
+            # Find the best match with highest confidence
+            best_num = None
+            best_confidence = 0
+            
+            for i in range(len(result['text'])):
+                text = result['text'][i].strip()
+                if text and text.isdigit():
+                    confidence = float(result['conf'][i])
+                    if confidence > best_confidence:
+                        num = int(text)
+                        if 1 <= num <= 9:
+                            best_num = num
+                            best_confidence = confidence
+            
+            # Only place the number if confidence is high enough
+            if best_num is not None and best_confidence > 60:  # 60% confidence threshold
+                self.place_number(best_num)
+                
+        except Exception as e:
+            print(f"OCR Error: {e}")
+    
+    def toggle_recognition_mode(self):
+        self.recognition_mode = not self.recognition_mode
+        self.strokes = {}
+        self.current_stroke = None
+    
+    def clear_current_cell(self):
+        if self.selected in self.strokes:
+            self.strokes[self.selected] = []
 
 def main():
     # Set default theme to dark mode
@@ -784,7 +1043,9 @@ def main():
             if event.type == pygame.MOUSEBUTTONDOWN:
                 pos = pygame.mouse.get_pos()
                 
-                if pos[0] < WIDTH and pos[1] < WIDTH:
+                if game.recognition_mode:
+                    game.start_stroke(pos)
+                elif pos[0] < WIDTH and pos[1] < WIDTH:
                     col = pos[0] // CELL_SIZE
                     row = pos[1] // CELL_SIZE
                     game.select(row, col)
@@ -806,9 +1067,33 @@ def main():
                     
                 if game.theme_button.is_hover(pos):
                     game.toggle_theme()
+                    
+                if game.recognition_button.is_hover(pos):
+                    game.toggle_recognition_mode()
+                    
+                if game.clear_button.is_hover(pos):
+                    game.clear_current_cell()
+            
+            if event.type == pygame.MOUSEMOTION:
+                pos = pygame.mouse.get_pos()
+                if game.recognition_mode and game.current_stroke:
+                    game.add_stroke_point(pos)
+                
+                game.solve_button.is_hover(pos)
+                game.new_game_button.is_hover(pos)
+                game.notes_button.is_hover(pos)
+                game.undo_button.is_hover(pos)
+                game.redo_button.is_hover(pos)
+                game.theme_button.is_hover(pos)
+                game.recognition_button.is_hover(pos)
+                game.clear_button.is_hover(pos)
+            
+            if event.type == pygame.MOUSEBUTTONUP:
+                if game.recognition_mode:
+                    game.end_stroke()
             
             if event.type == pygame.KEYDOWN:
-                if game.selected:
+                if game.selected and not game.recognition_mode:
                     if pygame.K_1 <= event.key <= pygame.K_9:
                         game.place_number(event.key - pygame.K_0)
                     elif event.key == pygame.K_DELETE or event.key == pygame.K_BACKSPACE:
@@ -832,17 +1117,12 @@ def main():
                     game = SudokuGame()
                 elif event.key == pygame.K_t:
                     game.toggle_theme()
+                elif event.key == pygame.K_h:
+                    game.toggle_recognition_mode()
+                elif event.key == pygame.K_c:
+                    game.clear_current_cell()
                 elif event.key == pygame.K_q:
                     running = False
-            
-            if event.type == pygame.MOUSEMOTION:
-                pos = pygame.mouse.get_pos()
-                game.solve_button.is_hover(pos)
-                game.new_game_button.is_hover(pos)
-                game.notes_button.is_hover(pos)
-                game.undo_button.is_hover(pos)
-                game.redo_button.is_hover(pos)
-                game.theme_button.is_hover(pos)
         
         game.draw()
         
