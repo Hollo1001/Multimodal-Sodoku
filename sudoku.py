@@ -52,7 +52,8 @@ DARK_SELECTION_COLOR = (50, 70, 100)
 DARK_NOTE_COLOR = (180, 180, 180)  # Brighter notes for better visibility
 DARK_BACKGROUND_COLOR = (20, 20, 20)
 DARK_TEXT_COLOR = (240, 240, 240)  # White text for dark mode
-DARK_ORIGINAL_NUMBER_COLOR = (240, 240, 240)  # White for original numbers in dark mode
+DARK_ORIGINAL_NUMBER_COLOR = (255, 255, 255)  # Pure white for original numbers in dark mode
+DARK_USER_NUMBER_COLOR = (100, 200, 255)  # Brighter blue for user-input numbers
 
 # Default to dark mode
 WHITE = DARK_WHITE
@@ -75,6 +76,7 @@ NOTE_COLOR = DARK_NOTE_COLOR
 BACKGROUND_COLOR = DARK_BACKGROUND_COLOR
 TEXT_COLOR = DARK_TEXT_COLOR
 ORIGINAL_NUMBER_COLOR = DARK_ORIGINAL_NUMBER_COLOR
+USER_NUMBER_COLOR = DARK_USER_NUMBER_COLOR
 
 # Global theme state
 dark_mode = True
@@ -101,7 +103,7 @@ pygame.display.set_caption('Sudoku')
 def set_theme(dark_mode):
     global WHITE, BLACK, GRAY, BLUE, RED, GREEN, DARK_GRAY, LIGHT_RED, LIGHT_GREEN
     global DARK_BLUE, PURPLE, LIGHT_PURPLE, GOLD, LIGHT_GOLD, GRID_COLOR
-    global SELECTION_COLOR, NOTE_COLOR, BACKGROUND_COLOR, TEXT_COLOR, ORIGINAL_NUMBER_COLOR
+    global SELECTION_COLOR, NOTE_COLOR, BACKGROUND_COLOR, TEXT_COLOR, ORIGINAL_NUMBER_COLOR, USER_NUMBER_COLOR
     
     if dark_mode:
         WHITE = DARK_WHITE
@@ -124,6 +126,7 @@ def set_theme(dark_mode):
         BACKGROUND_COLOR = DARK_BACKGROUND_COLOR
         TEXT_COLOR = DARK_TEXT_COLOR
         ORIGINAL_NUMBER_COLOR = DARK_ORIGINAL_NUMBER_COLOR
+        USER_NUMBER_COLOR = DARK_USER_NUMBER_COLOR
     else:
         WHITE = LIGHT_WHITE
         BLACK = LIGHT_BLACK
@@ -145,6 +148,7 @@ def set_theme(dark_mode):
         BACKGROUND_COLOR = LIGHT_BACKGROUND_COLOR
         TEXT_COLOR = LIGHT_TEXT_COLOR
         ORIGINAL_NUMBER_COLOR = LIGHT_ORIGINAL_NUMBER_COLOR
+        USER_NUMBER_COLOR = LIGHT_BLUE
 
 class Particle:
     def __init__(self, x, y, color):
@@ -562,7 +566,7 @@ class SudokuGame:
             for j in range(GRID_SIZE):
                 # Draw main numbers
                 if self.board[i, j] != 0:
-                    color = ORIGINAL_NUMBER_COLOR if self.original_board[i, j] != 0 else BLUE
+                    color = ORIGINAL_NUMBER_COLOR if self.original_board[i, j] != 0 else USER_NUMBER_COLOR
                     
                     # Handle animation for initial numbers
                     if (i, j) in self.cell_animations and self.cell_animations[(i, j)].active:
